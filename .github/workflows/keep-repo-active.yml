@@ -1,0 +1,27 @@
+# 防「60 天无活动自动禁用」——GitHub 会在仓库 60 天没有任何活动时把 scheduled
+# workflow 置为 disabled_inactivity 且不自动恢复(前车之鉴 is361/modelscope-keepalivess
+# 跑了 744 次后被禁,功亏一篑)。本 workflow 每月 1 号提交一次 heartbeat.txt,
+# 制造仓库活动,让 60 天计时器归零(月度 ≈30 天 < 60 天,可自我维持)。
+name: Keep Repo Active
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'   # 每月 1 号 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 制造仓库活动
+        run: |
+          git config user.name "keepalive-bot"
+          git config user.email "keepalive-bot@users.noreply.github.com"
+          date -u '+%Y-%m-%dT%H:%M:%SZ' >> heartbeat.txt
+          git add heartbeat.txt
+          git commit -m "heartbeat $(date -u '+%Y-%m')" || { echo "无变更,跳过"; exit 0; }
+          git push

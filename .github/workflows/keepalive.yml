@@ -1,0 +1,52 @@
+name: nvidia-free Space Keep-Alive
+
+on:
+  schedule:
+    # 每 10 分钟(UTC)。GitHub cron 最小粒度 5 分钟,高峰期实测会延迟 5~15 分钟;
+    # 创空间是「请求闲置」型休眠(有人访问即保持/唤醒),10 分钟足够。
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # 手动触发(测试用)
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Studio 页面(保活主体:产生实例访问)
+        shell: bash
+        run: |
+          URL="https://www.modelscope.cn/studios/A177593/nvidia-free-proxy"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 -A 'Mozilla/5.0' "$URL" || echo FAIL)
+          echo "→ $URL  HTTP $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::空间页面未返回 200(保活可能没生效)"; exit 1; }
+          echo "✅ 页面已打到"
+
+      - name: 校验实例真实状态(HTTP 200 不是有效判据,SPA 恒 200)
+        shell: bash
+        run: |
+          API="https://www.modelscope.cn/api/v1/studio/A177593/nvidia-free-proxy"
+          R=$(curl -s -o /tmp/studio.json -w '%{http_code}' --max-time 20 -A 'Mozilla/5.0' "$API" || echo FAIL)
+          if [ "$R" = "200" ]; then
+            S=$(grep -o '"Status":"[^"]*"' /tmp/studio.json | head -n1 | cut -d'"' -f4)
+            echo "✅ Data.Status=$S"
+            # 非 Running 仅 warning:p ing 本身即会唤醒,且下一拍会复核,不扰民
+            [ "$S" = "Running" ] || echo "::warning::Status=$S 非 Running(异常时查创空间控制台)"
+          else
+            echo "::error::状态查询失败(HTTP $R)"; exit 1
+          fi
+
+      - name: (可选)API 专用域名健康检查
+        shell: bash
+        env:
+          MS_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+        run: |
+          # 该域名(阿里云盾 WAF)对部分境外出口 IP 不通;GH 出口在美国,通了更好,不通不阻断
+          [ -n "$MS_TOKEN" ] || { echo "未配置 MODELSCOPE_TOKEN secret,跳过(可选步骤)"; exit 0; }
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            -H "Authorization: Bearer $MS_TOKEN" \
+            "https://studio-a177593-nvidia-free-proxy.api-inference.modelscope.net/healthz" || echo FAIL)
+          echo "→ api-inference/healthz  HTTP $CODE"
+          [ "$CODE" = "200" ] || echo "::warning::API 域名从 GH 出口不可达(不影响站点判据)"
