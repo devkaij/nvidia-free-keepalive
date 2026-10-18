@@ -14,39 +14,37 @@ jobs:
   keepalive:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      STUDIO_API: https://www.modelscope.cn/api/v1/studio/A177593/nvidia-free-proxy
+      API_HEALTH: https://studio-a177593-nvidia-free-proxy.api-inference.modelscope.net/healthz
     steps:
-      - name: Ping Studio 页面(保活主体:产生实例访问)
-        shell: bash
-        run: |
-          URL="https://www.modelscope.cn/studios/A177593/nvidia-free-proxy"
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 -A 'Mozilla/5.0' "$URL" || echo FAIL)
-          echo "→ $URL  HTTP $CODE"
-          [ "$CODE" = "200" ] || { echo "::error::空间页面未返回 200(保活可能没生效)"; exit 1; }
-          echo "✅ 页面已打到"
-
-      - name: 校验实例真实状态(HTTP 200 不是有效判据,SPA 恒 200)
-        shell: bash
-        run: |
-          API="https://www.modelscope.cn/api/v1/studio/A177593/nvidia-free-proxy"
-          R=$(curl -s -o /tmp/studio.json -w '%{http_code}' --max-time 20 -A 'Mozilla/5.0' "$API" || echo FAIL)
-          if [ "$R" = "200" ]; then
-            S=$(grep -o '"Status":"[^"]*"' /tmp/studio.json | head -n1 | cut -d'"' -f4)
-            echo "✅ Data.Status=$S"
-            # 非 Running 仅 warning:p ing 本身即会唤醒,且下一拍会复核,不扰民
-            [ "$S" = "Running" ] || echo "::warning::Status=$S 非 Running(异常时查创空间控制台)"
-          else
-            echo "::error::状态查询失败(HTTP $R)"; exit 1
-          fi
-
-      - name: (可选)API 专用域名健康检查
+      - name: ① 实例域名健康检查(api-inference;真实例 ping)
         shell: bash
         env:
           MS_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
         run: |
-          # 该域名(阿里云盾 WAF)对部分境外出口 IP 不通;GH 出口在美国,通了更好,不通不阻断
-          [ -n "$MS_TOKEN" ] || { echo "未配置 MODELSCOPE_TOKEN secret,跳过(可选步骤)"; exit 0; }
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-            -H "Authorization: Bearer $MS_TOKEN" \
-            "https://studio-a177593-nvidia-free-proxy.api-inference.modelscope.net/healthz" || echo FAIL)
-          echo "→ api-inference/healthz  HTTP $CODE"
-          [ "$CODE" = "200" ] || echo "::warning::API 域名从 GH 出口不可达(不影响站点判据)"
+          # 2026-10-18 实测:ms.show 独立域名已被平台全球 403(引导去 api-inference),
+          # 匿名心跳路已断;api-inference 需账号 token,国内 IP 实测 200,GH 出口(美国)
+          # 是否可达未知——通了就是真实例 ping(保活),不通只 warning 不阻断(判据靠 ②)。
+          if [ -z "$MS_TOKEN" ]; then
+            echo "未配置 MODELSCOPE_TOKEN secret,实例 ping 跳过(建议配置,见仓库 README)"
+            exit 0
+          fi
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 \
+            -A 'Mozilla/5.0' \
+            -H "Authorization: Bearer $MS_TOKEN" "$API_HEALTH" || echo FAIL)
+          echo "→ $API_HEALTH  HTTP $CODE"
+          [ "$CODE" = "200" ] || echo "::warning::GH 出口打不通实例域名(只影响本路 ping,判据以 ② 为准)"
+
+      - name: ② 校验实例真实状态(权威判据:HTTP 200 不是判据,SPA 恒 200)
+        shell: bash
+        run: |
+          R=$(curl -s -o /tmp/studio.json -w '%{http_code}' --max-time 25 -A 'Mozilla/5.0' "$STUDIO_API" || echo FAIL)
+          if [ "$R" = "200" ]; then
+            S=$(grep -o '"Status":"[^"]*"' /tmp/studio.json | head -n1 | cut -d'"' -f4)
+            echo "✅ Data.Status=$S"
+            # 非 Running 仅 warning:若 ① 通了则请求本身会唤醒,下一拍复核;不扰民
+            [ "$S" = "Running" ] || echo "::warning::Status=$S 非 Running(若 ① 未通,等国内主路唤醒)"
+          else
+            echo "::error::状态查询失败(HTTP $R)"; exit 1
+          fi
